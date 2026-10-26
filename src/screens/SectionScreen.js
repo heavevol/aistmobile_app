@@ -7,6 +7,7 @@ import { WebView } from 'react-native-webview';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import { PRIMARY_COLOR, BASE_URL } from '../constants/config';
+import { scheduleSaveSession, persistSessionNow } from '../utils/sessionPersistence';
 
 const DOWNLOADABLE_EXTENSIONS = [
   '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
@@ -45,7 +46,15 @@ export default function SectionScreen({ url, title, token }) {
   const [loading, setLoading] = useState(true);
   const [error,   setError]   = useState(false);
   const [ready,   setReady]   = useState(false);
+  // Меняется, когда система убила процесс WebView: пересоздаём компонент.
+  const [webViewKey, setWebViewKey] = useState(0);
   const sharingInProgress = useRef(false);
+
+  const recreateWebView = () => {
+    persistSessionNow();
+    setLoading(true);
+    setWebViewKey((k) => k + 1);
+  };
 
   useEffect(() => {
     const timer = setTimeout(() => setReady(true), 1500);
@@ -352,6 +361,7 @@ export default function SectionScreen({ url, title, token }) {
         </View>
       )}
       <WebView
+        key={webViewKey}
         ref={webRef}
         source={{ uri: url }}
         style={styles.webview}
@@ -359,7 +369,14 @@ export default function SectionScreen({ url, title, token }) {
         injectedJavaScript={injectedJS}
         textZoom={100}
         onLoadStart={() => setLoading(true)}
-        onLoadEnd={() => setLoading(false)}
+        onLoadEnd={() => { setLoading(false); scheduleSaveSession(); }}
+        // Вход/выход на сайте без перезагрузки страницы (SPA) тоже меняет cookie.
+        onNavigationStateChange={() => scheduleSaveSession()}
+        // Android: без этого обработчика гибель процесса отрисовки WebView
+        // (например, при нехватке памяти) роняет всё приложение.
+        onRenderProcessGone={recreateWebView}
+        // iOS: система выгрузила процесс страницы — иначе останется белый экран.
+        onContentProcessDidTerminate={recreateWebView}
         onError={() => { setLoading(false); setError(true); }}
         onHttpError={() => { setLoading(false); setError(true); }}
         onShouldStartLoadWithRequest={handleShouldStartLoad}
@@ -369,7 +386,9 @@ export default function SectionScreen({ url, title, token }) {
         thirdPartyCookiesEnabled={true}
         domStorageEnabled={true}
         cacheEnabled={true}
-        cacheMode="LOAD_CACHE_ELSE_NETWORK"
+        // LOAD_CACHE_ELSE_NETWORK отдавал из кэша устаревшие страницы, в том
+        // числе страницу входа или редирект на неё, даже при живой сессии.
+        cacheMode="LOAD_DEFAULT"
         scalesPageToFit={false}
         allowsInlineMediaPlayback={true}
         mediaPlaybackRequiresUserAction={false}
